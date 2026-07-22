@@ -18,7 +18,8 @@ const config = {
   localApiKey: process.env.LOCAL_API_KEY || "",
   downstreamApiKeys: parseStaticDownstreamKeys(process.env.DOWNSTREAM_API_KEYS || ""),
   modelAliases: parseModelAliases(process.env.MODEL_ALIASES || ""),
-  models: parseModelList(process.env.MODELS || "")
+  models: parseModelList(process.env.MODELS || ""),
+  modelListMode: parseModelListMode(process.env.MODEL_LIST_MODE || "merge")
 };
 
 const requestLogs = [];
@@ -146,11 +147,12 @@ async function sendModels(req, res, startedAt) {
     object: "list",
     source: result.source,
     upstreamBaseUrl: config.upstreamBaseUrl,
+    upstreamApiBaseUrl: getUpstreamApiBaseUrl(),
     data: result.models.map((model) => ({
       id: model,
       object: "model",
       created: 0,
-      owned_by: result.source === "upstream" ? "upstream" : "relay-demo"
+      owned_by: result.source.startsWith("upstream") ? "upstream" : "relay-demo"
     }))
   });
 }
@@ -277,7 +279,7 @@ async function relayChatCompletions(req, res, startedAt) {
   };
 
   try {
-    const upstreamUrl = `${config.upstreamBaseUrl}/v1/chat/completions`;
+    const upstreamUrl = buildUpstreamUrl("/chat/completions");
     const upstreamResponse = await fetch(upstreamUrl, {
       method: "POST",
       headers: {
@@ -349,7 +351,7 @@ async function getModelsFromUpstreamOrFallback() {
 
   if (config.upstreamApiKey) {
     try {
-      const response = await fetch(`${config.upstreamBaseUrl}/v1/models`, {
+      const response = await fetch(buildUpstreamUrl("/models"), {
         headers: {
           authorization: `Bearer ${config.upstreamApiKey}`
         }
@@ -361,12 +363,13 @@ async function getModelsFromUpstreamOrFallback() {
           : [];
         if (models.length > 0) {
           upstreamModelsCache.fetchedAt = Date.now();
-          upstreamModelsCache.models = models;
-          upstreamModelsCache.source = "upstream";
+          const mergedModels = mergeConfiguredModels(models);
+          upstreamModelsCache.models = mergedModels;
+          upstreamModelsCache.source = getModelSourceLabel("upstream");
           upstreamModelsCache.error = "";
           return {
-            models,
-            source: "upstream"
+            models: mergedModels,
+            source: upstreamModelsCache.source
           };
         }
       }
@@ -403,6 +406,28 @@ function getFallbackModels() {
   }
 
   return ["gpt-4o-mini"];
+}
+
+function mergeConfiguredModels(upstreamModels) {
+  if (config.modelListMode === "upstream") {
+    return upstreamModels;
+  }
+
+  if (config.modelListMode === "fallback") {
+    return getFallbackModels();
+  }
+
+  return uniqueList([...upstreamModels, ...getFallbackModels()]);
+}
+
+function getModelSourceLabel(upstreamSource) {
+  if (config.modelListMode === "merge" && config.models.length > 0) {
+    return `${upstreamSource}+local`;
+  }
+  if (config.modelListMode === "fallback") {
+    return "fallback";
+  }
+  return upstreamSource;
 }
 
 function getAuthContext(req) {
@@ -517,6 +542,18 @@ function parseModelList(value) {
     .split(",")
     .map((model) => model.trim())
     .filter(Boolean);
+}
+
+function parseModelListMode(value) {
+  const mode = value.trim().toLowerCase();
+  if (["upstream", "fallback", "merge"].includes(mode)) {
+    return mode;
+  }
+  return "merge";
+}
+
+function uniqueList(values) {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
 function parseStaticDownstreamKeys(value) {
@@ -669,6 +706,18 @@ function hashToken(token) {
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, "");
+}
+
+function getUpstreamApiBaseUrl() {
+  if (config.upstreamBaseUrl.endsWith("/v1")) {
+    return config.upstreamBaseUrl;
+  }
+  return `${config.upstreamBaseUrl}/v1`;
+}
+
+function buildUpstreamUrl(apiPath) {
+  const pathPart = apiPath.startsWith("/") ? apiPath.slice(1) : apiPath;
+  return `${getUpstreamApiBaseUrl()}/${pathPart}`;
 }
 
 function loadEnvFile(filePath) {

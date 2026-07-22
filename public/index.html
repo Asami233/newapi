@@ -742,7 +742,9 @@
 
       const sourceLabel = document.createElement("span");
       sourceLabel.className = "empty";
-      sourceLabel.textContent = source === "upstream" ? "来源：上游 /v1/models" : "来源：本地 fallback";
+      sourceLabel.textContent = source && source.startsWith("upstream")
+        ? "来源：上游 /v1/models" + (source.includes("+local") ? " + 本地补充" : "")
+        : "来源：本地 fallback";
       modelsOutputEl.appendChild(sourceLabel);
 
       for (const button of modelsOutputEl.querySelectorAll("[data-model]")) {
